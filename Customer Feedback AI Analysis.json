@@ -1,0 +1,287 @@
+{
+  "name": "Customer Feedback AI Analysis",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Customer Feedback",
+        "formDescription": "Please share your feedback about our service",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Name",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "What is your feedback about?",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Product"
+                  },
+                  {
+                    "option": "Service"
+                  },
+                  {
+                    "option": "Other"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Your feedback",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "How can we contact you?"
+            }
+          ]
+        },
+        "options": {
+          "path": "customer-feedback"
+        }
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        -528,
+        0
+      ],
+      "id": "fc4c146c-af4b-498d-b699-456416b3c0de",
+      "name": "Customer Feedback Form",
+      "webhookId": "ac6e36d5-35a1-440e-82a9-2b136ec5a45d"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.1-8b-instant\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Classify the sentiment of this customer feedback. Respond with ONLY one word: VERY_POSITIVE, POSITIVE, NEUTRAL, NEGATIVE, or VERY_NEGATIVE.\\n\\nFeedback: {{ $json['Your feedback'] }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -224,
+        -144
+      ],
+      "id": "958e6f1e-89b6-427c-bfdc-77fce5f4bacd",
+      "name": "HTTP Request",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "BjGm75zX2g3Q61WQ",
+          "name": "Feedback Analyser Google Gemini(PaLM) Api"
+        },
+        "httpHeaderAuth": {
+          "id": "HuRGS3E5rMYXqb6B",
+          "name": "Groq API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        48,
+        0
+      ],
+      "id": "d42cc582-71fe-48da-a148-9cdb6acbaaa6",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/1rJyruI2RcP7jCEPdO7Do9EnLd1UweQMVjx7uLRepdko/edit?gid=0#gid=0",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1rJyruI2RcP7jCEPdO7Do9EnLd1UweQMVjx7uLRepdko/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.submittedAt }}",
+            "Category": "={{ $json['What is your feedback about?'] }}",
+            "Feedback": "={{ $json['Your feedback'] }}",
+            "Name": "={{ $json.Name }}",
+            "Contact": "={{ $json['How can we contact you?'] }}",
+            "Source": "Form",
+            "Sentiment": "={{ $json.choices[0].message.content }}",
+            "Urgent": "={{ $json.choices[0].message.content.includes('NEGATIVE') ? 'Yes' : 'No' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Category",
+              "displayName": "Category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Feedback",
+              "displayName": "Feedback",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Contact",
+              "displayName": "Contact",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Source",
+              "displayName": "Source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Urgent",
+              "displayName": "Urgent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Sentiment",
+              "displayName": "Sentiment",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        256,
+        0
+      ],
+      "id": "c26f0429-1b0a-46d7-92fc-9f267569c146",
+      "name": "Append row in sheet",
+      "credentials": {
+        "googleApi": {
+          "id": "14sNlqGcUEgEGprQ",
+          "name": "n8n Sheets"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Customer Feedback Form": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "a98b851a-3ded-4953-b2fb-18c676848e7c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "a077f12b1845ac19b6ed8ab16b6f27e6d8d66ed9e7ecd48525f43b20716470ff"
+  },
+  "id": "rWWQNAEr7LzoifwX",
+  "tags": []
+}

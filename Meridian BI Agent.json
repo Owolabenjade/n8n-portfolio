@@ -1,0 +1,175 @@
+{
+  "name": "Meridian BI Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "trigger": [
+          "app_mention"
+        ],
+        "channelId": {
+          "__rl": true,
+          "value": "C0AK3HELVF0",
+          "mode": "list",
+          "cachedResultName": "all-meridian-capital-worspace"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.slackTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "5e0fa3c6-7a07-42d2-9feb-dca65f69ea1a",
+      "name": "Slack Trigger",
+      "webhookId": "98591889-c7a3-42d3-9ade-c4cdc0e68d8a",
+      "credentials": {
+        "slackApi": {
+          "id": "WcqpDlq8IbTwudYq",
+          "name": "Meridian Capital Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.text }}",
+        "options": {
+          "systemMessage": "You are Meridian BI Agent, a helpful business intelligence assistant. You help users with questions about stocks, companies, and financial data.\n\nWhen you use the HTTP Request tool to get stock prices, the response will be in this format:\n{\n  \"Global Quote\": {\n    \"01. symbol\": \"AAPL\",\n    \"05. price\": \"215.2000\",\n    \"09. change\": \"3.4600\",\n    \"10. change percent\": \"1.6341%\"\n  }\n}\n\nExtract the \"05. price\" field and report it as the current stock price. Also mention the change and change percent if available.\n\nExample response: \"The current price of Apple (AAPL) is $215.20, up $3.46 (1.63%) today.\"\n\nBe concise and professional. If you can't find data, say so honestly."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        208,
+        0
+      ],
+      "id": "1d7892e4-d35a-4075-b1eb-96db37080208",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": "llama-3.1-8b-instant",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        208,
+        208
+      ],
+      "id": "89d307b4-2b69-436a-a194-db8b71b849a1",
+      "name": "Groq Chat Model",
+      "credentials": {
+        "groqApi": {
+          "id": "rfro48tYM6W1Wpec",
+          "name": "Meridian Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $('Slack Trigger').item.json.channel }}",
+          "mode": "id"
+        },
+        "text": "={{ $json.output }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        560,
+        0
+      ],
+      "id": "be200fc9-0254-41aa-a896-c65d60221153",
+      "name": "Send a message",
+      "webhookId": "99ac13af-544e-4816-9abf-7e031700e458",
+      "credentials": {
+        "slackApi": {
+          "id": "WcqpDlq8IbTwudYq",
+          "name": "Meridian Capital Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "toolDescription": "Get the current stock price for any company. Use this when the user asks about stock prices, share prices, or how much a stock is worth. Input should be a stock ticker symbol like AAPL for Apple, MSFT for Microsoft, GOOGL for Google.",
+        "url": "https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={{ $fromAI('symbol', 'AAPL', 'string', 'The stock ticker symbol like AAPL, MSFT, TSLA') }}&apikey=ZSWO3BCP5S71K3P2",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        352,
+        208
+      ],
+      "id": "f2f3ec79-26bf-4e13-bb35-41873f749449",
+      "name": "HTTP Request"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Slack Trigger": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "04569312-aefd-4efe-8d4b-cfbbb40e8259",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "a077f12b1845ac19b6ed8ab16b6f27e6d8d66ed9e7ecd48525f43b20716470ff"
+  },
+  "id": "90snJXdj4LW4bGpj",
+  "tags": []
+}
