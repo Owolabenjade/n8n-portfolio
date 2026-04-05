@@ -1,0 +1,572 @@
+{
+  "name": "1. Ticket Classification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "freshdesk-ticket",
+        "options": {}
+      },
+      "id": "webhook-node",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 360],
+      "webhookId": "freshdesk-ticket"
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "UrbanNest Database"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "Order Database"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "customer_email",
+              "lookupValue": "={{ $json.body.freshdesk_webhook.ticket_requester_email }}"
+            }
+          ]
+        },
+        "options": {
+          "outputFormatting": {
+            "values": {
+              "generalFormatting": "JSON_FORMAT"
+            }
+          }
+        }
+      },
+      "id": "google-sheets-lookup",
+      "name": "Get row(s) in sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [400, 360],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "urbannest-google-sheets",
+          "name": "UrbanNest - Google Sheets"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const webhook = $('Webhook').item.json.body.freshdesk_webhook;\nconst customerData = $('Get row(s) in sheet').item.json;\n\nconst isKnownCustomer = customerData && customerData.customer_email;\n\nconst enrichedTicket = {\n  ticket_id: webhook.ticket_id,\n  subject: webhook.ticket_subject,\n  description: webhook.ticket_description,\n  requester_email: webhook.ticket_requester_email,\n  requester_name: webhook.ticket_requester_name,\n  created_at: webhook.ticket_created_at,\n  \n  is_known_customer: isKnownCustomer,\n  customer_segment: isKnownCustomer ? customerData.customer_segment : 'Unknown',\n  \n  latest_order: isKnownCustomer ? {\n    order_id: customerData.order_id,\n    order_date: customerData.order_date,\n    order_total: customerData.order_total,\n    items: customerData.items,\n    shipping_status: customerData.shipping_status,\n    tracking_number: customerData.tracking_number\n  } : null\n};\n\nreturn enrichedTicket;"
+      },
+      "id": "enrich-ticket-data",
+      "name": "Enrich Ticket Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 360]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ticket = $json;\n\ntry {\n  const response = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://api.groq.com/openai/v1/chat/completions',\n    headers: {\n      'Authorization': 'Bearer YOUR_GROQ_API_KEY',\n      'Content-Type': 'application/json'\n    },\n    body: {\n      model: 'llama-3.3-70b-versatile',\n      messages: [\n        {\n          role: 'system',\n          content: `You are a customer support classifier. Classify tickets into exactly ONE category:\n\nSHIPPING: Questions about an EXISTING order - tracking, delivery status, delays, where is my package\nRETURN: Requests to return or exchange items from an EXISTING order\nPRODUCT_QUESTION: PRE-SALE questions (before purchase) - shipping costs, delivery times, product availability, do you ship to X, product details, sizing, colors\nORDER_CHANGE: Requests to modify or cancel an EXISTING order\nCOMPLAINT: Expressions of dissatisfaction, damaged items, quality issues\nESCALATE: Requests for manager, threats, repeated issues, very angry customers\n\nIMPORTANT DISTINCTION:\n- \"Where is my order?\" = SHIPPING (existing order)\n- \"Do you ship to Canada?\" = PRODUCT_QUESTION (pre-sale, no order yet)\n- \"How long does shipping take?\" = PRODUCT_QUESTION (pre-sale inquiry)\n- \"My order has not arrived\" = SHIPPING (existing order)\n\nRate urgency 1-5:\n1 = Low - General inquiry\n2 = Medium-Low - Standard request  \n3 = Medium - Needs attention within 24 hours\n4 = High - Customer is frustrated\n5 = Critical - Very angry, threatening\n\nRespond with JSON only: {\"category\": \"NAME\", \"urgency\": NUMBER, \"reasoning\": \"explanation\"}`\n        },\n        {\n          role: 'user',\n          content: `Classify this ticket:\n\nSubject: ${ticket.subject}\nMessage: ${ticket.description}\nCustomer: ${ticket.requester_email}\nSegment: ${ticket.customer_segment}`\n        }\n      ],\n      temperature: 0.1,\n      max_tokens: 200\n    },\n    json: true\n  });\n\n  const classification = JSON.parse(response.choices[0].message.content);\n\n  return {\n    ...ticket,\n    classification: classification,\n    classification_error: false\n  };\n\n} catch (error) {\n  return {\n    ...ticket,\n    classification: {\n      category: 'ESCALATE',\n      urgency: 5,\n      reasoning: 'AUTO-ESCALATED: Classification system failed. Error: ' + error.message\n    },\n    classification_error: true\n  };\n}"
+      },
+      "id": "classify-ticket-groq",
+      "name": "Classify Ticket (Groq)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 360]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\n\ntry {\n  await this.helpers.httpRequest({\n    method: 'PUT',\n    url: `https://YOUR_SUBDOMAIN.freshdesk.com/api/v2/tickets/${data.ticket_id}`,\n    headers: {\n      'Content-Type': 'application/json'\n    },\n    auth: {\n      username: 'YOUR_FRESHDESK_API_KEY',\n      password: 'X'\n    },\n    body: {\n      tags: [\n        data.classification.category,\n        `urgency-${data.classification.urgency}`,\n        `segment-${data.customer_segment || 'Unknown'}`\n      ]\n    },\n    json: true\n  });\n\n  return {\n    ...data,\n    freshdesk_updated: true,\n    tag_error: false\n  };\n\n} catch (error) {\n  return {\n    ...data,\n    freshdesk_updated: false,\n    tag_error: true,\n    tag_error_message: error.message\n  };\n}"
+      },
+      "id": "update-freshdesk-tags",
+      "name": "Update Freshdesk Tags",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 360]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification.category }}",
+                    "rightValue": "ESCALATE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Escalation"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification.category }}",
+                    "rightValue": "COMPLAINT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "High Complaint"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification.category }}",
+                    "rightValue": "SHIPPING",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Shipping"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification.category }}",
+                    "rightValue": "RETURN",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Return"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.classification.category }}",
+                    "rightValue": "PRODUCT_QUESTION",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Product Question"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "route-by-category",
+      "name": "Route by Category",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [1200, 360]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\n\nconst assignedTo = 'senior.agent@urbannest.com';\n\ntry {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: `https://YOUR_SUBDOMAIN.freshdesk.com/api/v2/tickets/${data.ticket_id}/notes`,\n    headers: {\n      'Content-Type': 'application/json'\n    },\n    auth: {\n      username: 'YOUR_FRESHDESK_API_KEY',\n      password: 'X'\n    },\n    body: {\n      body: `<b>⚠️ Human Attention Required</b><br><br>This ticket has been classified as <b>${data.classification.category}</b> with urgency level <b>${data.classification.urgency}/5</b>.<br><br><b>Reason:</b> ${data.classification.reasoning}<br><br>A personalized response from a human agent is recommended.`,\n      private: true\n    },\n    json: true\n  });\n\n  return {\n    ...data,\n    draft_generated: false,\n    draft_response: null,\n    assigned_to: assignedTo,\n    handler: 'escalation',\n    handler_error: false\n  };\n\n} catch (error) {\n  return {\n    ...data,\n    draft_generated: false,\n    draft_response: null,\n    assigned_to: assignedTo,\n    handler: 'escalation',\n    handler_error: true,\n    handler_error_message: error.message\n  };\n}"
+      },
+      "id": "handle-escalation",
+      "name": "Handle Escalation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\n\nconst assignedTo = data.classification.urgency >= 4 \n  ? 'senior.agent@urbannest.com' \n  : 'support.team@urbannest.com';\n\ntry {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: `https://YOUR_SUBDOMAIN.freshdesk.com/api/v2/tickets/${data.ticket_id}/notes`,\n    headers: {\n      'Content-Type': 'application/json'\n    },\n    auth: {\n      username: 'YOUR_FRESHDESK_API_KEY',\n      password: 'X'\n    },\n    body: {\n      body: `<b>⚠️ Human Attention Required</b><br><br>This ticket has been classified as <b>${data.classification.category}</b> with urgency level <b>${data.classification.urgency}/5</b>.<br><br><b>Reason:</b> ${data.classification.reasoning}<br><br>A personalized response from a human agent is recommended.`,\n      private: true\n    },\n    json: true\n  });\n\n  return {\n    ...data,\n    draft_generated: false,\n    draft_response: null,\n    assigned_to: assignedTo,\n    handler: 'complaint',\n    handler_error: false\n  };\n\n} catch (error) {\n  return {\n    ...data,\n    draft_generated: false,\n    draft_response: null,\n    assigned_to: assignedTo,\n    handler: 'complaint',\n    handler_error: true,\n    handler_error_message: error.message\n  };\n}"
+      },
+      "id": "handle-complaint",
+      "name": "Handle Complaint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\n\nconst assignedTo = 'shipping.team@urbannest.com';\n\nconst hasOrder = data.latest_order && data.latest_order.order_id;\nlet draftResponse = '';\n\ntry {\n  if (!data.is_known_customer) {\n    draftResponse = `To locate your order, please provide your order number and the email address used when placing the order.\n\nOnce we have this information, we can provide you with the current status and tracking details.`;\n\n  } else if (!hasOrder) {\n    draftResponse = `We could not find any orders associated with your email address.\n\nPlease provide your order number so we can look up the status. If you placed the order using a different email address, please let us know.`;\n\n  } else {\n    const order = data.latest_order;\n    const status = order.shipping_status || 'processing';\n    const tracking = order.tracking_number;\n    const items = order.items || 'your items';\n    \n    if (status === 'delivered') {\n      draftResponse = `Your order ${order.order_id} (${items}) was delivered.\n\nTracking number: ${tracking}\n\nIf you did not receive the package, please check with neighbors or your building management. You can also verify delivery details using the tracking number on the carrier website.\n\nIf the package is still missing, reply to this message and we will open an investigation with the carrier.`;\n\n    } else if (status === 'in_transit') {\n      draftResponse = `Your order ${order.order_id} (${items}) is currently in transit.\n\nTracking number: ${tracking}\n\nYou can track your package using this number on the carrier website. Estimated delivery is within 2-5 business days.`;\n\n    } else if (status === 'delayed') {\n      draftResponse = `Your order ${order.order_id} (${items}) is currently delayed.\n\nTracking number: ${tracking}\n\nWe apologize for the inconvenience. The carrier has reported a delay, but your package is still on its way. You will receive an email notification when it is out for delivery.`;\n\n    } else if (status === 'shipped') {\n      draftResponse = `Your order ${order.order_id} (${items}) has shipped.\n\nTracking number: ${tracking || 'will be available within 24 hours'}\n\nYou will receive tracking updates via email as your package moves through the delivery network.`;\n\n    } else {\n      draftResponse = `Your order ${order.order_id} (${items}) is currently being processed.\n\nOnce shipped, you will receive an email with tracking information. Standard orders ship within 1-2 business days.`;\n    }\n  }\n\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: `https://YOUR_SUBDOMAIN.freshdesk.com/api/v2/tickets/${data.ticket_id}/notes`,\n    headers: {\n      'Content-Type': 'application/json'\n    },\n    auth: {\n      username: 'YOUR_FRESHDESK_API_KEY',\n      password: 'X'\n    },\n    body: {\n      body: `<b>🤖 AI-Generated Draft Response:</b><br><br>${draftResponse.replace(/\\n\\n/g, '<br><br>').replace(/\\n/g, '<br>')}`,\n      private: true\n    },\n    json: true\n  });\n\n  return {\n    ...data,\n    draft_generated: true,\n    draft_response: draftResponse,\n    assigned_to: assignedTo,\n    handler: 'shipping',\n    handler_error: false\n  };\n\n} catch (error) {\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST',\n      url: `https://YOUR_SUBDOMAIN.freshdesk.com/api/v2/tickets/${data.ticket_id}/notes`,\n      headers: {\n        'Content-Type': 'application/json'\n      },\n      auth: {\n        username: 'YOUR_FRESHDESK_API_KEY',\n        password: 'X'\n      },\n      body: {\n        body: `<b>⚠️ System Notice:</b> Automated response generation failed. Please handle this ticket manually.<br><br>Error: ${error.message}`,\n        private: true\n      },\n      json: true\n    });\n  } catch (noteError) {}\n\n  return {\n    ...data,\n    draft_generated: false,\n    draft_response: null,\n    assigned_to: assignedTo,\n    handler: 'shipping',\n    handler_error: true,\n    handler_error_message: error.message\n  };\n}"
+      },
+      "id": "handle-shipping",
+      "name": "Handle Shipping",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\n\nconst assignedTo = 'returns.team@urbannest.com';\n\nconst hasOrder = data.latest_order && data.latest_order.order_id;\nlet draftResponse = '';\n\ntry {\n  if (!data.is_known_customer || !hasOrder) {\n    draftResponse = `To process your return request, please provide your order number and the email address used when placing the order.\n\nOnce we locate your order, we will send you the return instructions and a prepaid shipping label.\n\nIf you have any questions, email returns@urbannest.com.`;\n\n  } else {\n    const orderInfo = data.latest_order;\n    \n    draftResponse = `Your return request for order ${orderInfo.order_id} has been received.\n\nTo complete your return:\n1. Email returns@urbannest.com with your order number\n2. You will receive a Return Merchandise Authorization (RMA) number and prepaid shipping label\n3. Pack the item in its original packaging and attach the shipping label\n4. Drop off the package at any authorized shipping location\n\nYour refund will be processed within 5-7 business days after we receive the returned item. Returns are accepted within 30 days of delivery.`;\n  }\n\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: `https://YOUR_SUBDOMAIN.freshdesk.com/api/v2/tickets/${data.ticket_id}/notes`,\n    headers: {\n      'Content-Type': 'application/json'\n    },\n    auth: {\n      username: 'YOUR_FRESHDESK_API_KEY',\n      password: 'X'\n    },\n    body: {\n      body: `<b>🤖 AI-Generated Draft Response:</b><br><br>${draftResponse.replace(/\\n\\n/g, '<br><br>').replace(/\\n/g, '<br>')}`,\n      private: true\n    },\n    json: true\n  });\n\n  return {\n    ...data,\n    draft_generated: true,\n    draft_response: draftResponse,\n    assigned_to: assignedTo,\n    handler: 'return',\n    handler_error: false\n  };\n\n} catch (error) {\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST',\n      url: `https://YOUR_SUBDOMAIN.freshdesk.com/api/v2/tickets/${data.ticket_id}/notes`,\n      headers: {\n        'Content-Type': 'application/json'\n      },\n      auth: {\n        username: 'YOUR_FRESHDESK_API_KEY',\n        password: 'X'\n      },\n      body: {\n        body: `<b>⚠️ System Notice:</b> Automated response generation failed. Please handle this ticket manually.<br><br>Error: ${error.message}`,\n        private: true\n      },\n      json: true\n    });\n  } catch (noteError) {}\n\n  return {\n    ...data,\n    draft_generated: false,\n    draft_response: null,\n    assigned_to: assignedTo,\n    handler: 'return',\n    handler_error: true,\n    handler_error_message: error.message\n  };\n}"
+      },
+      "id": "handle-return",
+      "name": "Handle Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 460]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\n\nconst assignedTo = 'sales.team@urbannest.com';\n\ntry {\n  const responsePrompt = `You are a customer support agent for UrbanNest Home Goods.\nAnswer this pre-sale question directly.\n\nQuestion: ${data.subject} - ${data.description}\n\nINFORMATION TO USE:\n- Domestic USA shipping: 5-7 business days, free on orders over $50\n- Canada shipping: 10-14 business days\n- International shipping: 14-21 business days\n- Shipping costs calculated at checkout based on weight and destination\n- 30-day return policy on all items\n- All products come with a 1-year warranty\n\nRULES:\n1. Start with the direct answer - no greeting or preamble\n2. Keep it to 2-3 short paragraphs\n3. Do NOT use contractions\n4. Do NOT ask for order number - this is a pre-sale inquiry\n5. If you do not know specific product details, suggest they visit the website or contact sales@urbannest.com\n\nWrite the response:`;\n\n  const aiResponse = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://api.groq.com/openai/v1/chat/completions',\n    headers: {\n      'Authorization': 'Bearer YOUR_GROQ_API_KEY',\n      'Content-Type': 'application/json'\n    },\n    body: {\n      model: 'llama-3.3-70b-versatile',\n      messages: [{ role: 'user', content: responsePrompt }],\n      temperature: 0.3,\n      max_tokens: 250\n    },\n    json: true\n  });\n\n  const draftResponse = aiResponse.choices[0].message.content;\n\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: `https://YOUR_SUBDOMAIN.freshdesk.com/api/v2/tickets/${data.ticket_id}/notes`,\n    headers: {\n      'Content-Type': 'application/json'\n    },\n    auth: {\n      username: 'YOUR_FRESHDESK_API_KEY',\n      password: 'X'\n    },\n    body: {\n      body: `<b>🤖 AI-Generated Draft Response:</b><br><br>${draftResponse.replace(/\\n\\n/g, '<br><br>').replace(/\\n/g, '<br>')}`,\n      private: true\n    },\n    json: true\n  });\n\n  return {\n    ...data,\n    draft_generated: true,\n    draft_response: draftResponse,\n    assigned_to: assignedTo,\n    handler: 'product_question',\n    handler_error: false\n  };\n\n} catch (error) {\n  const fallbackResponse = `Thank you for your inquiry about UrbanNest Home Goods.\n\nFor detailed product information, shipping rates, and availability, please visit our website at urbannest.com or contact our sales team at sales@urbannest.com.\n\nOur standard shipping times are:\n- USA: 5-7 business days (free shipping on orders over $50)\n- Canada: 10-14 business days\n- International: 14-21 business days`;\n\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST',\n      url: `https://YOUR_SUBDOMAIN.freshdesk.com/api/v2/tickets/${data.ticket_id}/notes`,\n      headers: {\n        'Content-Type': 'application/json'\n      },\n      auth: {\n        username: 'YOUR_FRESHDESK_API_KEY',\n        password: 'X'\n      },\n      body: {\n        body: `<b>🤖 AI-Generated Draft Response:</b><br><br>${fallbackResponse.replace(/\\n\\n/g, '<br><br>').replace(/\\n/g, '<br>')}`,\n        private: true\n      },\n      json: true\n    });\n  } catch (noteError) {}\n\n  return {\n    ...data,\n    draft_generated: true,\n    draft_response: fallbackResponse,\n    assigned_to: assignedTo,\n    handler: 'product_question',\n    handler_error: true,\n    handler_error_message: error.message\n  };\n}"
+      },
+      "id": "handle-product-question",
+      "name": "Handle Product Question",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 580]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\n\nconst assignedTo = 'support.team@urbannest.com';\n\ntry {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: `https://YOUR_SUBDOMAIN.freshdesk.com/api/v2/tickets/${data.ticket_id}/notes`,\n    headers: {\n      'Content-Type': 'application/json'\n    },\n    auth: {\n      username: 'YOUR_FRESHDESK_API_KEY',\n      password: 'X'\n    },\n    body: {\n      body: `<b>📋 Ticket Classified</b><br><br>Category: <b>${data.classification.category}</b><br>Urgency: <b>${data.classification.urgency}/5</b><br><br><b>Reason:</b> ${data.classification.reasoning}<br><br>This ticket type requires manual review.`,\n      private: true\n    },\n    json: true\n  });\n\n  return {\n    ...data,\n    draft_generated: false,\n    draft_response: null,\n    assigned_to: assignedTo,\n    handler: 'fallback',\n    handler_error: false\n  };\n\n} catch (error) {\n  return {\n    ...data,\n    draft_generated: false,\n    draft_response: null,\n    assigned_to: assignedTo,\n    handler: 'fallback',\n    handler_error: true,\n    handler_error_message: error.message\n  };\n}"
+      },
+      "id": "handle-other",
+      "name": "Handle Other",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 700]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\n\nconst timestamp = new Date().toISOString();\n\nconst rowData = {\n  timestamp: timestamp,\n  ticket_id: data.ticket_id,\n  customer_email: data.requester_email,\n  customer_segment: data.customer_segment || 'Unknown',\n  category: data.classification.category,\n  urgency: data.classification.urgency,\n  reasoning: data.classification.reasoning,\n  draft_generated: data.draft_generated === true ? 'TRUE' : 'FALSE',\n  assigned_to: data.assigned_to || '',\n  freshdesk_link: `https://YOUR_SUBDOMAIN.freshdesk.com/a/tickets/${data.ticket_id}`\n};\n\nreturn rowData;"
+      },
+      "id": "prepare-analytics-data",
+      "name": "Prepare Analytics Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1700, 360]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "UrbanNest Database"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "Ticket Analytics"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.timestamp }}",
+            "ticket_id": "={{ $json.ticket_id }}",
+            "customer_email": "={{ $json.customer_email }}",
+            "customer_segment": "={{ $json.customer_segment }}",
+            "category": "={{ $json.category }}",
+            "urgency": "={{ $json.urgency }}",
+            "reasoning": "={{ $json.reasoning }}",
+            "draft_generated": "={{ $json.draft_generated }}",
+            "assigned_to": "={{ $json.assigned_to }}",
+            "freshdesk_link": "={{ $json.freshdesk_link }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "log-to-analytics",
+      "name": "Log to Analytics",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1900, 280],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "urbannest-google-sheets",
+          "name": "UrbanNest - Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\n\nconst emailSubject = `[UrbanNest] New Ticket #${data.ticket_id} - ${data.category} (Urgency: ${data.urgency}/5)`;\n\nconst emailBody = `\n<div style=\"font-family: Arial, sans-serif; max-width: 600px;\">\n  <h2 style=\"color: #2c3e50;\">New Support Ticket Assigned</h2>\n  \n  <table style=\"width: 100%; border-collapse: collapse; margin: 20px 0;\">\n    <tr>\n      <td style=\"padding: 8px; border: 1px solid #ddd; background: #f9f9f9;\"><strong>Ticket ID</strong></td>\n      <td style=\"padding: 8px; border: 1px solid #ddd;\">#${data.ticket_id}</td>\n    </tr>\n    <tr>\n      <td style=\"padding: 8px; border: 1px solid #ddd; background: #f9f9f9;\"><strong>Category</strong></td>\n      <td style=\"padding: 8px; border: 1px solid #ddd;\">${data.category}</td>\n    </tr>\n    <tr>\n      <td style=\"padding: 8px; border: 1px solid #ddd; background: #f9f9f9;\"><strong>Urgency</strong></td>\n      <td style=\"padding: 8px; border: 1px solid #ddd;\">${data.urgency}/5</td>\n    </tr>\n    <tr>\n      <td style=\"padding: 8px; border: 1px solid #ddd; background: #f9f9f9;\"><strong>Customer</strong></td>\n      <td style=\"padding: 8px; border: 1px solid #ddd;\">${data.customer_email}</td>\n    </tr>\n    <tr>\n      <td style=\"padding: 8px; border: 1px solid #ddd; background: #f9f9f9;\"><strong>Segment</strong></td>\n      <td style=\"padding: 8px; border: 1px solid #ddd;\">${data.customer_segment}</td>\n    </tr>\n    <tr>\n      <td style=\"padding: 8px; border: 1px solid #ddd; background: #f9f9f9;\"><strong>Assigned To</strong></td>\n      <td style=\"padding: 8px; border: 1px solid #ddd;\">${data.assigned_to}</td>\n    </tr>\n    <tr>\n      <td style=\"padding: 8px; border: 1px solid #ddd; background: #f9f9f9;\"><strong>Draft Generated</strong></td>\n      <td style=\"padding: 8px; border: 1px solid #ddd;\">${data.draft_generated === 'TRUE' ? 'Yes' : 'No - Manual response needed'}</td>\n    </tr>\n  </table>\n  \n  <h3 style=\"color: #2c3e50;\">Classification Reason</h3>\n  <p style=\"background: #f5f5f5; padding: 12px; border-radius: 4px;\">${data.reasoning}</p>\n  \n  <p style=\"margin-top: 20px;\">\n    <a href=\"${data.freshdesk_link}\" style=\"background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;\">View Ticket in Freshdesk</a>\n  </p>\n  \n  <hr style=\"margin-top: 30px; border: none; border-top: 1px solid #eee;\">\n  <p style=\"color: #999; font-size: 12px;\">This is an automated notification from the UrbanNest CX System.</p>\n</div>\n`;\n\nreturn {\n  to: data.assigned_to,\n  subject: emailSubject,\n  body: emailBody,\n  ticket_id: data.ticket_id\n};"
+      },
+      "id": "prepare-email-notification",
+      "name": "Prepare Email Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1900, 440]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.body }}",
+        "options": {}
+      },
+      "id": "send-team-notification",
+      "name": "Send Team Notification",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2100, 440],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail-oauth",
+          "name": "Gmail"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Get row(s) in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s) in sheet": {
+      "main": [
+        [
+          {
+            "node": "Enrich Ticket Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Ticket Data": {
+      "main": [
+        [
+          {
+            "node": "Classify Ticket (Groq)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Ticket (Groq)": {
+      "main": [
+        [
+          {
+            "node": "Update Freshdesk Tags",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Freshdesk Tags": {
+      "main": [
+        [
+          {
+            "node": "Route by Category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Category": {
+      "main": [
+        [
+          {
+            "node": "Handle Escalation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Complaint",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Shipping",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Return",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Product Question",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Other",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Escalation": {
+      "main": [
+        [
+          {
+            "node": "Prepare Analytics Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Complaint": {
+      "main": [
+        [
+          {
+            "node": "Prepare Analytics Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Shipping": {
+      "main": [
+        [
+          {
+            "node": "Prepare Analytics Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Return": {
+      "main": [
+        [
+          {
+            "node": "Prepare Analytics Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Product Question": {
+      "main": [
+        [
+          {
+            "node": "Prepare Analytics Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Other": {
+      "main": [
+        [
+          {
+            "node": "Prepare Analytics Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Analytics Data": {
+      "main": [
+        [
+          {
+            "node": "Log to Analytics",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Email Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Email Notification": {
+      "main": [
+        [
+          {
+            "node": "Send Team Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "urbannest-cx-automation"
+  },
+  "tags": [
+    {
+      "name": "Customer Support"
+    },
+    {
+      "name": "AI Automation"
+    }
+  ],
+  "pinData": {}
+}
