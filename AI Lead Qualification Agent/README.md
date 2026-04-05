@@ -95,8 +95,6 @@ No manual review. No copy-paste. The agent handles Tier 1 lead qualification aut
 | Database | Google Sheets | Free |
 | Notifications | Slack Webhooks | Free |
 
-**Total Cost: $0 - $20/month** (depending on n8n hosting)
-
 ---
 
 ## Setup Instructions
