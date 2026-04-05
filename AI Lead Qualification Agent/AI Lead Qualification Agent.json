@@ -1,0 +1,466 @@
+{
+  "name": "AI Lead Qualification Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "new-lead",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-intake",
+      "name": "New Lead Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "lead-intake-webhook",
+      "notes": "Receives new lead data from forms, landing pages, or other sources. Test with sample payload."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.1-70b-versatile\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a lead qualification assistant. Score leads 1-10 based on these ICP criteria:\\n- Company size: 20-200 employees (ideal)\\n- Industry: SaaS, Agency, or E-commerce (ideal)\\n- Need: Automation, AI agents, or workflow optimization\\n- Budget signals: mentions growth, scaling, or specific tools\\n\\nRespond with ONLY valid JSON, no other text: {\\\"score\\\": number, \\\"reasoning\\\": \\\"brief explanation\\\", \\\"qualified\\\": boolean}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Lead info:\\nName: {{ $('New Lead Webhook').item.json.name }}\\nCompany: {{ $('New Lead Webhook').item.json.company }}\\nMessage: {{ $('New Lead Webhook').item.json.message }}\"\n    }\n  ],\n  \"temperature\": 0.3\n}",
+        "options": {}
+      },
+      "id": "groq-score",
+      "name": "Score Lead (Groq LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_GROQ_CREDENTIAL_ID",
+          "name": "Groq API"
+        }
+      },
+      "notes": "Uses Groq's free LLM to score the lead. Set up httpHeaderAuth credential with: Name: Authorization, Value: Bearer YOUR_GROQ_API_KEY"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the LLM response\nconst response = $input.first().json;\nconst content = response.choices[0].message.content;\n\nlet parsed;\ntry {\n  // Try to parse JSON from LLM response\n  parsed = JSON.parse(content);\n} catch (e) {\n  // Fallback if LLM doesn't return clean JSON\n  parsed = { score: 5, reasoning: \"Could not parse response\", qualified: false };\n}\n\n// Combine original lead data with scoring\nconst leadData = $('New Lead Webhook').item.json;\n\nreturn [{\n  json: {\n    ...leadData,\n    lead_score: parsed.score,\n    score_reasoning: parsed.reasoning,\n    is_qualified: parsed.qualified || parsed.score >= 7,\n    scored_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "parse-score",
+      "name": "Parse Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [710, 300],
+      "notes": "Parses LLM response and combines with lead data. Falls back gracefully if JSON parsing fails."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "qualified-check",
+              "leftValue": "={{ $json.is_qualified }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-qualified",
+      "name": "Is Qualified?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [940, 300],
+      "notes": "Routes lead based on qualification score. Score >= 7 or qualified: true goes to qualified branch."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.1-70b-versatile\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a friendly sales assistant for an automation agency. Write a brief, personalized email response to a qualified lead. Be warm but professional. Include a soft CTA to book a discovery call. Keep it under 150 words. Do not use generic phrases like 'I hope this email finds you well'. Sign off as Benjamin.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Lead: {{ $json.name }} from {{ $json.company }}\\nTheir message: {{ $json.message }}\\nWhy they qualified (score {{ $json.lead_score }}/10): {{ $json.score_reasoning }}\\n\\nCalendly link to include: https://calendly.com/YOUR_LINK\"\n    }\n  ],\n  \"temperature\": 0.7\n}",
+        "options": {}
+      },
+      "id": "groq-qualified-response",
+      "name": "Generate Qualified Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1170, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_GROQ_CREDENTIAL_ID",
+          "name": "Groq API"
+        }
+      },
+      "notes": "Generates personalized response for qualified leads with CTA to book a call."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.1-70b-versatile\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Write a brief, polite email response explaining we are not the right fit at this time. Be kind and professional. Wish them well and suggest they might benefit from exploring automation communities or freelance marketplaces for their needs. Keep it under 80 words. Sign off as Benjamin.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Lead: {{ $json.name }} from {{ $json.company }}\\nTheir message: {{ $json.message }}\"\n    }\n  ],\n  \"temperature\": 0.7\n}",
+        "options": {}
+      },
+      "id": "groq-decline-response",
+      "name": "Generate Polite Decline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1170, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_GROQ_CREDENTIAL_ID",
+          "name": "Groq API"
+        }
+      },
+      "notes": "Generates polite decline for unqualified leads."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract email content from LLM response\nconst response = $input.first().json;\nconst emailContent = response.choices[0].message.content;\nconst leadData = $('Parse Score').item.json;\n\nreturn [{\n  json: {\n    ...leadData,\n    email_content: emailContent,\n    response_type: 'qualified'\n  }\n}];"
+      },
+      "id": "parse-qualified-email",
+      "name": "Parse Qualified Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 200],
+      "notes": "Extracts generated email from LLM response for qualified leads."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract email content from LLM response\nconst response = $input.first().json;\nconst emailContent = response.choices[0].message.content;\nconst leadData = $('Parse Score').item.json;\n\nreturn [{\n  json: {\n    ...leadData,\n    email_content: emailContent,\n    response_type: 'declined'\n  }\n}];"
+      },
+      "id": "parse-decline-email",
+      "name": "Parse Decline Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 400],
+      "notes": "Extracts generated email from LLM response for declined leads."
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": []
+        },
+        "options": {}
+      },
+      "id": "merge-branches",
+      "name": "Merge Branches",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1630, 300],
+      "notes": "Merges qualified and declined branches back together for unified logging."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.scored_at }}",
+            "Name": "={{ $json.name }}",
+            "Email": "={{ $json.email }}",
+            "Company": "={{ $json.company }}",
+            "Message": "={{ $json.message }}",
+            "Score": "={{ $json.lead_score }}",
+            "Qualified": "={{ $json.is_qualified }}",
+            "Reasoning": "={{ $json.score_reasoning }}",
+            "Response Type": "={{ $json.response_type }}",
+            "Email Sent": "={{ $json.email_content }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "sheets-log",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1860, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "Logs all leads to Google Sheets for tracking and reporting. Create sheet with columns: Timestamp, Name, Email, Company, Message, Score, Qualified, Reasoning, Response Type, Email Sent"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "=Re: Your inquiry{{ $json.company ? ' - ' + $json.company : '' }}",
+        "emailType": "text",
+        "message": "={{ $json.email_content }}",
+        "options": {}
+      },
+      "id": "send-email",
+      "name": "Send Email via Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2090, 200],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YOUR_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account"
+        }
+      },
+      "notes": "Sends the AI-generated email response to the lead."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "hot-lead-check",
+              "leftValue": "={{ $json.lead_score }}",
+              "rightValue": 8,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-hot-lead",
+      "name": "Is Hot Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2090, 400],
+      "notes": "Checks if lead score is 8 or higher to trigger Slack alert for immediate follow-up."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"blocks\": [\n    {\n      \"type\": \"header\",\n      \"text\": {\n        \"type\": \"plain_text\",\n        \"text\": \"🔥 Hot Lead Alert!\",\n        \"emoji\": true\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"fields\": [\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Name:*\\n{{ $json.name }}\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Company:*\\n{{ $json.company }}\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Score:*\\n{{ $json.lead_score }}/10\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Email:*\\n{{ $json.email }}\"\n        }\n      ]\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Their Message:*\\n{{ $json.message }}\"\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Why They Qualified:*\\n{{ $json.score_reasoning }}\"\n      }\n    },\n    {\n      \"type\": \"divider\"\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"AI-generated email has been sent. Follow up within 24 hours!\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "slack-alert",
+      "name": "Slack Hot Lead Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2320, 400],
+      "notes": "Sends formatted Slack alert for hot leads (score 8+). Replace YOUR_SLACK_WEBHOOK_URL with your Slack incoming webhook URL."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"message\": \"Lead processed successfully\",\n  \"lead_score\": {{ $('Parse Score').item.json.lead_score }},\n  \"qualified\": {{ $('Parse Score').item.json.is_qualified }}\n}",
+        "options": {}
+      },
+      "id": "webhook-response",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2320, 200],
+      "notes": "Returns confirmation to the source that submitted the lead."
+    }
+  ],
+  "connections": {
+    "New Lead Webhook": {
+      "main": [
+        [
+          {
+            "node": "Score Lead (Groq LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Lead (Groq LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Score": {
+      "main": [
+        [
+          {
+            "node": "Is Qualified?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Qualified?": {
+      "main": [
+        [
+          {
+            "node": "Generate Qualified Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Polite Decline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Qualified Response": {
+      "main": [
+        [
+          {
+            "node": "Parse Qualified Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Polite Decline": {
+      "main": [
+        [
+          {
+            "node": "Parse Decline Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Qualified Email": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Decline Email": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Branches": {
+      "main": [
+        [
+          {
+            "node": "Log to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Send Email via Gmail",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Is Hot Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email via Gmail": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Hot Lead?": {
+      "main": [
+        [
+          {
+            "node": "Slack Hot Lead Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "AI Agent",
+      "id": "1"
+    },
+    {
+      "name": "Lead Qualification",
+      "id": "2"
+    },
+    {
+      "name": "Portfolio",
+      "id": "3"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-04-05T00:00:00.000Z",
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "portfolio-demo"
+  }
+}
