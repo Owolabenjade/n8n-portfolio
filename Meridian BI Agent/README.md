@@ -1,5 +1,9 @@
 # Meridian BI Agent
 
+![alt text](image.png)
+
+![alt text](image-1.png)
+
 ## 📌 Overview
 
 **Meridian BI Agent v2** is an intelligent Slack-integrated Business Intelligence assistant built using **n8n**. It listens for Slack mentions, processes user queries, and responds with either:
@@ -8,10 +12,6 @@
 * Live financial data via integrated tools (stock prices, company profiles, news)
 
 The workflow is designed to be **context-aware**, **tool-efficient**, and **thread-sensitive**, making it suitable for real-time business intelligence interactions.
-
-![alt text](image.png)
-
-![alt text](image-1.png)
 ---
 
 ## ⚙️ Architecture Summary
